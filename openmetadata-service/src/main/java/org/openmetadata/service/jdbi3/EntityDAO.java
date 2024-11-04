@@ -19,9 +19,12 @@ import static org.openmetadata.service.jdbi3.ListFilter.escapeApostrophe;
 import static org.openmetadata.service.jdbi3.locator.ConnectionType.MYSQL;
 import static org.openmetadata.service.jdbi3.locator.ConnectionType.POSTGRES;
 
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
+
 import lombok.SneakyThrows;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.jdbi.v3.sqlobject.customizer.Bind;
 import org.jdbi.v3.sqlobject.customizer.Define;
 import org.jdbi.v3.sqlobject.statement.SqlQuery;
@@ -29,6 +32,7 @@ import org.jdbi.v3.sqlobject.statement.SqlUpdate;
 import org.openmetadata.schema.EntityInterface;
 import org.openmetadata.schema.type.Include;
 import org.openmetadata.service.Entity;
+import org.openmetadata.service.config.GraphInstance;
 import org.openmetadata.service.exception.CatalogExceptionMessage;
 import org.openmetadata.service.exception.EntityNotFoundException;
 import org.openmetadata.service.jdbi3.locator.ConnectionAwareSqlQuery;
@@ -397,8 +401,65 @@ public interface EntityDAO<T extends EntityInterface> {
 
   @SneakyThrows
   default T findEntityByName(String fqn, Include include) {
-    return jsonToEntity(
+    T result = jsonToEntity(
         findByName(getTableName(), getNameHashColumn(), fqn, getCondition(include)), fqn);
+    T entity = null;
+    try {
+      entity = findEntityInGraphByName(fqn, include);
+    } catch (Exception e) {
+      LOG.error("Error while fetching entity from graph for {}", fqn);
+    }
+//    if (entity != null) {
+//      result = entity;
+//    }
+    return result;
+  }
+  GraphTraversalSource g = GraphInstance.getInstance().getG();
+  default GraphTraversalSource getGraphTraversalSource() {
+    return g;
+  }
+
+  default Map<String, Object> getVertexProperties(GraphTraversalSource g, Vertex vertex) {
+    Map<String, Object> properties = new HashMap<>();
+    g.V(vertex).properties().forEachRemaining(p -> {
+      String k = p.key();
+      Object v = p.value();
+      if (v instanceof String && JsonUtils.isValidJson((String) v)) {
+        properties.put(k, JsonUtils.readJson((String) v));
+      } else if (k.equals("uid") && v instanceof String) {
+        properties.put(k, UUID.fromString((String) v));
+      } else {
+        properties.put(k, v);
+      }
+    });
+    properties.put("id", properties.remove("uid"));
+    properties.remove(getNameHashColumn());
+    return properties;
+  }
+
+  default T findEntityInGraphByName(String fqn, Include include) {
+      GraphTraversalSource g = getGraphTraversalSource();
+      GraphTraversal<Vertex, Vertex> traversal = getVertexGraphTraversal(g, fqn, include);
+      if (traversal.hasNext()) {
+        Map<String, Object> properties = getVertexProperties(g, traversal.next());
+        return jsonToEntity(JsonUtils.pojoToJson(properties), fqn);
+      }
+      return null;
+  }
+
+  default GraphTraversal<Vertex, Vertex> getVertexGraphTraversal(
+      GraphTraversalSource g, String fqn, Include include) {
+    String hash = FullyQualifiedName.buildHash(fqn);
+    final GraphTraversal<Vertex, Vertex> traversal = g.V().has(getTableName(), getNameHashColumn(), hash);
+    if (!supportsSoftDelete()) {
+      return traversal;
+    }
+    if (include == null || include == Include.NON_DELETED) {
+      return traversal.has("deleted", false);
+    } else if (include == Include.DELETED) {
+      return traversal.has("deleted", true);
+    }
+    return traversal;
   }
 
   @SneakyThrows

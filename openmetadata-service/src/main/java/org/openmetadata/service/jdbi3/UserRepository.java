@@ -38,9 +38,12 @@ import javax.ws.rs.core.UriInfo;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.csv.CSVPrinter;
 import org.apache.commons.csv.CSVRecord;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.jdbi.v3.sqlobject.transaction.Transaction;
 import org.openmetadata.csv.EntityCsv;
 import org.openmetadata.schema.api.teams.CreateTeam.TeamType;
+import org.openmetadata.schema.entity.data.Table;
 import org.openmetadata.schema.entity.teams.AuthenticationMechanism;
 import org.openmetadata.schema.entity.teams.Team;
 import org.openmetadata.schema.entity.teams.User;
@@ -135,6 +138,23 @@ public class UserRepository extends EntityRepository<User> {
   public void prepare(User user, boolean update) {
     validateTeams(user);
     validateRoles(user.getRoles());
+  }
+
+  public void update(User entity) {
+    String label = dao.getTableName();
+    GraphTraversalSource g = dao.getGraphTraversalSource();
+    Vertex v1 = g.V()
+        .has(label, "uid", entity.getId().toString())
+        .tryNext()
+        .orElseGet(() -> g.addV(label).property("uid", entity.getId().toString()).next());
+
+    g.V(v1)
+        .property("isBot", entity.getIsBot())
+        .property("isAdmin", entity.getIsAdmin())
+        .property("email", entity.getEmail())
+        .property("roles", JsonUtils.pojoToJson(entity.getRoles()))
+        .iterate();
+    super.update(entity);
   }
 
   @Override

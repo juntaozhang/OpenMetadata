@@ -575,13 +575,15 @@ public class FeedRepository {
             String type = l.get(0);
             String taskStatus = l.get(1);
             int count = Integer.parseInt(l.get(2));
-            if (type.equalsIgnoreCase("Conversation")) {
-              threadCount.setConversationCount(count);
-            } else if (type.equalsIgnoreCase("Task")) {
-              if (taskStatus.equals("Open")) {
-                threadCount.setOpenTaskCount(count);
-              } else if (taskStatus.equals("Closed")) {
-                threadCount.setClosedTaskCount(count);
+            if (type != null) {
+              if (type.equalsIgnoreCase("Conversation")) {
+                threadCount.setConversationCount(count);
+              } else if (type.equalsIgnoreCase("Task")) {
+                if (taskStatus.equals("Open")) {
+                  threadCount.setOpenTaskCount(count);
+                } else if (taskStatus.equals("Closed")) {
+                  threadCount.setClosedTaskCount(count);
+                }
               }
             }
           });
@@ -603,17 +605,19 @@ public class FeedRepository {
             String taskStatus = l.get(2);
             threadCount.setEntityLink(eLink);
             int count = Integer.parseInt(l.get(3));
-            if (type.equalsIgnoreCase("Conversation")) {
-              threadCount.setConversationCount(count);
-            } else if (type.equalsIgnoreCase("Task")) {
-              if (taskStatus.equals("Open")) {
-                threadCount.setOpenTaskCount(count);
-              } else if (taskStatus.equals("Closed")) {
-                threadCount.setClosedTaskCount(count);
+            if (type != null) {
+              if (type.equalsIgnoreCase("Conversation")) {
+                threadCount.setConversationCount(count);
+              } else if (type.equalsIgnoreCase("Task")) {
+                if (taskStatus.equals("Open")) {
+                  threadCount.setOpenTaskCount(count);
+                } else if (taskStatus.equals("Closed")) {
+                  threadCount.setClosedTaskCount(count);
+                }
               }
+              computeTotalTaskCount(threadCount);
+              threadCounts.add(threadCount);
             }
-            computeTotalTaskCount(threadCount);
-            threadCounts.add(threadCount);
           });
     }
     return threadCounts;
