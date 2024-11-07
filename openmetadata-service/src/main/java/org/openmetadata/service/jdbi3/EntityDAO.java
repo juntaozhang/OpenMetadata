@@ -21,6 +21,7 @@ import static org.openmetadata.service.jdbi3.locator.ConnectionType.POSTGRES;
 
 import java.util.*;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import lombok.SneakyThrows;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
@@ -32,9 +33,9 @@ import org.jdbi.v3.sqlobject.statement.SqlUpdate;
 import org.openmetadata.schema.EntityInterface;
 import org.openmetadata.schema.type.Include;
 import org.openmetadata.service.Entity;
-import org.openmetadata.service.config.GraphInstance;
 import org.openmetadata.service.exception.CatalogExceptionMessage;
 import org.openmetadata.service.exception.EntityNotFoundException;
+import org.openmetadata.service.graph.JanusGraphClient;
 import org.openmetadata.service.jdbi3.locator.ConnectionAwareSqlQuery;
 import org.openmetadata.service.jdbi3.locator.ConnectionAwareSqlUpdate;
 import org.openmetadata.service.util.FullyQualifiedName;
@@ -348,17 +349,26 @@ public interface EntityDAO<T extends EntityInterface> {
   /** Default methods that interfaces with implementation. Don't override */
   default void insert(EntityInterface entity, String fqn) {
     insert(getTableName(), getNameHashColumn(), fqn, JsonUtils.pojoToJson(entity));
+    saveGraph(entity);
   }
 
   default void insert(String nameHash, EntityInterface entity, String fqn) {
     insert(getTableName(), nameHash, fqn, JsonUtils.pojoToJson(entity));
+    saveGraph(entity);
   }
 
   default void update(UUID id, String fqn, String json) {
     update(getTableName(), getNameHashColumn(), fqn, id.toString(), json);
+    saveGraph(fqn, json);
+  }
+
+  default void saveGraph(String fqn, String json) {
+    EntityInterface entity = jsonToEntity(json, fqn);
+    saveGraph(entity);
   }
 
   default void update(EntityInterface entity) {
+    saveGraph(entity);
     update(
         getTableName(),
         getNameHashColumn(),
@@ -368,6 +378,7 @@ public interface EntityDAO<T extends EntityInterface> {
   }
 
   default void update(String nameHashColumn, EntityInterface entity) {
+    saveGraph(entity);
     update(
         getTableName(),
         nameHashColumn,
@@ -375,6 +386,36 @@ public interface EntityDAO<T extends EntityInterface> {
         entity.getId().toString(),
         JsonUtils.pojoToJson(entity));
   }
+
+  default void saveGraph(EntityInterface entity) {
+    try (GraphTraversalSource g = new JanusGraphClient().getWriteGraphTraversalSource()) {
+      String label = getTableName();
+      Vertex vertex = g.V()
+          .has(label, "uid", entity.getId().toString())
+          .tryNext()
+          .orElseGet(() -> g.addV(label).property("uid", entity.getId().toString()).next());
+      Map<String, Object> properties = JsonUtils.readValue(JsonUtils.pojoToJson(entity), new TypeReference<>() {
+      });
+      Map<Object, Object> copy = new HashMap<>();
+      properties.forEach((k, v) -> {
+        if (k.equalsIgnoreCase("id")) {
+          copy.put("uid", v);
+        } else if (k.equalsIgnoreCase(getNameHashColumn())) {
+          copy.put(getNameHashColumn(), FullyQualifiedName.buildHash(entity.getFullyQualifiedName()));
+        } else if (v instanceof Map || v instanceof List || v instanceof Set) {
+          copy.put(k, JsonUtils.pojoToJson(v));
+        } else if (v instanceof Enum) {
+          copy.put(k, ((Enum<?>) v).name());
+        } else {
+          copy.put(k, v);
+        }
+      });
+      g.V(vertex).property(copy).iterate();
+    } catch (Exception e) {
+      LOG.error(e.getMessage(), e);
+    }
+  }
+
 
   default String getCondition(Include include) {
     if (!supportsSoftDelete()) {
@@ -403,20 +444,11 @@ public interface EntityDAO<T extends EntityInterface> {
   default T findEntityByName(String fqn, Include include) {
     T result = jsonToEntity(
         findByName(getTableName(), getNameHashColumn(), fqn, getCondition(include)), fqn);
-    T entity = null;
-    try {
-      entity = findEntityInGraphByName(fqn, include);
-    } catch (Exception e) {
-      LOG.error("Error while fetching entity from graph for {}", fqn);
-    }
+    T entity = findEntityInGraphByName(fqn, include);
 //    if (entity != null) {
 //      result = entity;
 //    }
     return result;
-  }
-  GraphTraversalSource g = GraphInstance.getInstance().getG();
-  default GraphTraversalSource getGraphTraversalSource() {
-    return g;
   }
 
   default Map<String, Object> getVertexProperties(GraphTraversalSource g, Vertex vertex) {
@@ -438,13 +470,17 @@ public interface EntityDAO<T extends EntityInterface> {
   }
 
   default T findEntityInGraphByName(String fqn, Include include) {
-      GraphTraversalSource g = getGraphTraversalSource();
+    try(GraphTraversalSource g = new JanusGraphClient().getReadGraphTraversalSource()) {
       GraphTraversal<Vertex, Vertex> traversal = getVertexGraphTraversal(g, fqn, include);
       if (traversal.hasNext()) {
         Map<String, Object> properties = getVertexProperties(g, traversal.next());
         return jsonToEntity(JsonUtils.pojoToJson(properties), fqn);
       }
-      return null;
+    } catch (Exception e) {
+      LOG.error("Error while fetching entity from graph for {}", fqn);
+    }
+
+    return null;
   }
 
   default GraphTraversal<Vertex, Vertex> getVertexGraphTraversal(

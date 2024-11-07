@@ -1,4 +1,4 @@
-package org.openmetadata.service.config;
+package org.openmetadata.service.graph;
 
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.configuration2.PropertiesConfiguration;
@@ -8,6 +8,7 @@ import org.apache.tinkerpop.gremlin.driver.Result;
 import org.apache.tinkerpop.gremlin.driver.ResultSet;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.janusgraph.util.system.ConfigurationUtil;
+import org.openmetadata.service.exception.GraphException;
 
 import java.util.stream.Stream;
 
@@ -15,30 +16,25 @@ import static org.apache.tinkerpop.gremlin.process.traversal.AnonymousTraversalS
 
 /**
  * docker network create --driver bridge mynet
+ * <p>
  * docker run -it -p 8182:8182 --name janusgraph  --network mynet janusgraph/janusgraph:latest
- * docker run -d --rm -p 8081:8081 --name puppygraph  -e PUPPYGRAPH_USERNAME=puppygraph -e PUPPYGRAPH_PASSWORD=puppygraph  -e PORT=8081 -e  USE_GREMLIN_AUTH=false  -e GREMLINSERVER_HOST=janusgraph:8182 --network mynet puppygraph/puppygraph-query:latest
+ * <p>
+ * UI
+ * <ul>
+ *  <li> docker run -d --rm -p 8081:8081 --name puppygraph  -e PUPPYGRAPH_USERNAME=puppygraph -e PUPPYGRAPH_PASSWORD=puppygraph  -e PORT=8081 -e  USE_GREMLIN_AUTH=false  -e GREMLINSERVER_HOST=janusgraph:8182 --network mynet puppygraph/puppygraph-query:latest
+ *  <li> docker run --rm -d -p 3002:3002 -p 3001:3001 --name=janusgraph-visualizer --network=mynet janusgraph/janusgraph-visualizer:latest
+ * </ul>
  */
 @Slf4j
-public class GraphInstance {
-  private static final GraphInstance instance = new GraphInstance();
-  private final GraphTraversalSource g;
-
-  private GraphInstance() {
-    try {
-//      g = traversal().withRemote(DriverRemoteConnection.using("localhost", 8182, "g"));
-      g = traversal().withRemote("conf/remote-graph.properties");
-    } catch (Exception e) {
-      throw new RuntimeException(e);
-    }
-  }
-
-  public static GraphInstance getInstance() {
-    return instance;
-  }
+public class JanusGraphClient implements GraphClient {
 
   public static void main(String[] args) throws Exception {
-    buildVertexIndex();
+    // PropertiesConfiguration conf =
+    //     ConfigurationUtil.loadPropertiesConfig("conf/remote-graph.properties");
+    // Cluster cluster = Cluster.open(conf.getString("gremlin.remote.driver.clusterFile"));
+    // Client client = cluster.connect();
 
+    buildVertexIndex();
     GraphTraversalSource g = traversal().withRemote("conf/remote-graph.properties");
     long numVertices = g.V().count().next();
     long numEdges = g.E().count().next();
@@ -84,7 +80,21 @@ public class GraphInstance {
     futureList.map(Result::toString).forEach(System.out::println);
   }
 
-  public GraphTraversalSource getG() {
-    return instance.g;
+  @Override
+  public GraphTraversalSource getReadGraphTraversalSource() {
+    try {
+      return traversal().withRemote("conf/remote-graph.properties");
+    } catch (Exception e) {
+      throw new GraphException(e);
+    }
+  }
+
+  @Override
+  public GraphTraversalSource getWriteGraphTraversalSource() {
+    try {
+      return traversal().withRemote("conf/remote-graph.properties");
+    } catch (Exception e) {
+      throw new GraphException(e);
+    }
   }
 }

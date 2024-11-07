@@ -14,7 +14,6 @@
 package org.openmetadata.service.jdbi3;
 
 import static java.util.stream.Collectors.groupingBy;
-import static org.apache.tinkerpop.gremlin.process.traversal.AnonymousTraversalSource.traversal;
 import static org.openmetadata.common.utils.CommonUtil.listOf;
 import static org.openmetadata.common.utils.CommonUtil.listOrEmpty;
 import static org.openmetadata.common.utils.CommonUtil.nullOrEmpty;
@@ -55,9 +54,6 @@ import org.apache.commons.csv.CSVPrinter;
 import org.apache.commons.csv.CSVRecord;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.Triple;
-import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;
-import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
-import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.jdbi.v3.sqlobject.transaction.Transaction;
 import org.openmetadata.common.utils.CommonUtil;
 import org.openmetadata.csv.EntityCsv;
@@ -657,22 +653,6 @@ public class TableRepository extends EntityRepository<Table> {
         .withDatabase(schema.getDatabase())
         .withService(schema.getService())
         .withServiceType(schema.getServiceType());
-  }
-
-  public void update(Table entity) {
-    String label = dao.getTableName();
-    GraphTraversalSource g = dao.getGraphTraversalSource();
-    Vertex v1 = g.V()
-        .has(label, "uid", entity.getId().toString())
-        .tryNext()
-        .orElseGet(() -> g.addV(label).property("uid", entity.getId().toString()).next());
-
-    g.V(v1).property("columns", JsonUtils.pojoToJson(entity.getColumns()))
-        .property("database", JsonUtils.pojoToJson(entity.getDatabase()))
-        .property("sampleData", JsonUtils.pojoToJson(entity.getSampleData()))
-        .property("databaseSchema", JsonUtils.pojoToJson(entity.getDatabaseSchema()))
-        .iterate();
-    super.update(entity);
   }
 
   @Override

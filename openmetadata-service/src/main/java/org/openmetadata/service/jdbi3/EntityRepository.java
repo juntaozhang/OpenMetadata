@@ -106,7 +106,6 @@ import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
-import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.jdbi.v3.sqlobject.transaction.Transaction;
 import org.openmetadata.common.utils.CommonUtil;
 import org.openmetadata.schema.CreateEntity;
@@ -148,6 +147,7 @@ import org.openmetadata.service.TypeRegistry;
 import org.openmetadata.service.exception.CatalogExceptionMessage;
 import org.openmetadata.service.exception.EntityNotFoundException;
 import org.openmetadata.service.exception.UnhandledServerException;
+import org.openmetadata.service.graph.JanusGraphClient;
 import org.openmetadata.service.jdbi3.CollectionDAO.EntityRelationshipRecord;
 import org.openmetadata.service.jdbi3.CollectionDAO.EntityVersionPair;
 import org.openmetadata.service.jdbi3.CollectionDAO.ExtensionRecord;
@@ -542,11 +542,11 @@ public abstract class EntityRepository<T extends EntityInterface> {
       }
       @SuppressWarnings("unchecked")
       T entity = (T) CACHE_WITH_ID.get(new ImmutablePair<>(entityType, id));
-      try {
-        update(entity);
-      } catch (Exception e) {
-        e.printStackTrace();
-      }
+//      try {
+//        update(entity);
+//      } catch (Exception e) {
+//        e.printStackTrace();
+//      }
       if (include == NON_DELETED && Boolean.TRUE.equals(entity.getDeleted())
           || include == DELETED && !Boolean.TRUE.equals(entity.getDeleted())) {
         throw new EntityNotFoundException(entityNotFound(entityType, id));
@@ -610,11 +610,11 @@ public abstract class EntityRepository<T extends EntityInterface> {
       }
       @SuppressWarnings("unchecked")
       T entity = (T) CACHE_WITH_NAME.get(new ImmutablePair<>(entityType, fqn));
-      try {
-        update(entity);
-      } catch (Exception e) {
-        e.printStackTrace();
-      }
+//      try {
+//        update(entity);
+//      } catch (Exception e) {
+//        e.printStackTrace();
+//      }
       if (include == NON_DELETED && Boolean.TRUE.equals(entity.getDeleted())
           || include == DELETED && !Boolean.TRUE.equals(entity.getDeleted())) {
         throw new EntityNotFoundException(entityNotFound(entityType, fqn));
@@ -1259,32 +1259,6 @@ public abstract class EntityRepository<T extends EntityInterface> {
     return entity;
   }
 
-  public void update(T entity) {
-    String label = dao.getTableName();
-    GraphTraversalSource g = dao.getGraphTraversalSource();
-    Vertex v1 = g.V()
-        .has(label, "uid", entity.getId().toString())
-        .tryNext()
-        .orElseGet(() -> g.addV(label).property("uid", entity.getId().toString()).next());
-
-    g.V(v1)
-        .property("name", entity.getName())
-        .property(dao.getNameHashColumn(), FullyQualifiedName.buildHash(entity.getFullyQualifiedName()))
-        .property("fullyQualifiedName", entity.getFullyQualifiedName())
-        .property("description", entity.getDescription())
-        .property("displayName", entity.getDisplayName())
-        .property("deleted", entity.getDeleted())
-        .property("version", entity.getVersion())
-        .property("updatedBy", entity.getUpdatedBy())
-        .property("updatedAt", entity.getUpdatedAt())
-        .property("href", entity.getHref())
-        .property("changeDescription", JsonUtils.pojoToJson(entity.getChangeDescription()))
-        .property("extension", JsonUtils.pojoToJson(entity.getExtension()))
-        .property("votes", JsonUtils.pojoToJson(entity.getVotes()))
-        .property("lifeCycle", JsonUtils.pojoToJson(entity.getLifeCycle()))
-        .iterate();
-  }
-
   @Transaction
   protected void store(T entity, boolean update) {
     // Don't store owner, database, href and tags as JSON. Build it on the fly based on
@@ -1307,11 +1281,6 @@ public abstract class EntityRepository<T extends EntityInterface> {
 
     if (update) {
       dao.update(entity.getId(), entity.getFullyQualifiedName(), JsonUtils.pojoToJson(entity));
-      try {
-        update(entity);
-      }catch (Exception e) {
-        e.printStackTrace();
-      }
       LOG.info("Updated {}:{}:{}", entityType, entity.getId(), entity.getFullyQualifiedName());
       invalidate(entity);
     } else {
@@ -1614,33 +1583,6 @@ public abstract class EntityRepository<T extends EntityInterface> {
     daoCollection
         .relationshipDAO()
         .insert(from, to, fromEntity, toEntity, relationship.ordinal(), json);
-    addRelationship(fromId, toId, fromEntity, toEntity, relationship, json);
-  }
-
-  private void addRelationship(UUID fromId, UUID toId, String fromEntity, String toEntity, Relationship relationship, String json) {
-    try {
-      GraphTraversalSource g = dao.getGraphTraversalSource();
-      val fromOpt = g.V().has("uid", fromId.toString()).tryNext();
-      val toOpt = g.V().has("uid", toId.toString()).tryNext();
-      if(fromOpt.isEmpty() || toOpt.isEmpty()) {
-        return;
-      }
-      val e = g.V().has("uid", fromId.toString())
-          .outE(relationship.value())
-          .filter(inV().has("uid", toId.toString()))
-          .tryNext()
-          .orElseGet(() ->
-              g.addE(relationship.value())
-                  .from(fromOpt.get())
-                  .to(toOpt.get())
-                  .next());
-      g.E(e).property("json", json)
-          .property("fromEntity", fromEntity)
-          .property("toEntity", toEntity)
-          .iterate();
-    } catch (Exception e) {
-      e.printStackTrace();
-    }
   }
 
   @Transaction
@@ -1675,12 +1617,8 @@ public abstract class EntityRepository<T extends EntityInterface> {
         : daoCollection
         .relationshipDAO()
         .findFrom(toId, toEntityType, relationship.ordinal(), fromEntityType);
-    for (val r : records) {
-      addRelationship(r.getId(), toId, r.getType(), toEntityType, relationship, r.getJson());
-    }
     List<EntityRelationshipRecord> recordsFromGraph = null;
-    try {
-      GraphTraversalSource g = dao.getGraphTraversalSource();
+    try(GraphTraversalSource g = new JanusGraphClient().getReadGraphTraversalSource()) {
       var e = g.V().has("uid", toId.toString()).inE(relationship.value());
       if(fromEntityType != null) {
         e = e.has("fromEntity", fromEntityType);
@@ -1783,16 +1721,6 @@ public abstract class EntityRepository<T extends EntityInterface> {
     daoCollection
         .relationshipDAO()
         .delete(fromId, fromEntityType, toId, toEntityType, relationship.ordinal());
-    GraphTraversalSource g = dao.getGraphTraversalSource();
-    try {
-      g.V().has("uid",fromId.toString())
-          .outE(relationship.value())
-          .filter(inV().has("uid", toId.toString()))
-          .drop()
-          .iterate();
-    }catch (Exception e) {
-      e.printStackTrace();
-    }
   }
 
   public final void deleteTo(
