@@ -322,7 +322,7 @@ public class GlossaryTermRepository extends EntityRepository<GlossaryTerm> {
         && (!(term.getTags().isEmpty() && request.getGlossaryTags().isEmpty()))) {
       // Remove current entity tags in the database. It will be added back later from the merged tag
       // list.
-      daoCollection.tagUsageDAO().deleteTagsByTarget(term.getFullyQualifiedName());
+      daoCollection.tagUsageDAO().deleteTagsByTarget(dao, term.getFullyQualifiedName());
       applyTags(getUniqueTags(request.getGlossaryTags()), term.getFullyQualifiedName());
 
       searchRepository.updateEntity(term.getEntityReference());
@@ -911,7 +911,7 @@ public class GlossaryTermRepository extends EntityRepository<GlossaryTerm> {
         // Remove current entity tags in the database. It will be added back later from the merged
         // tag
         // list.
-        daoCollection.tagUsageDAO().deleteTagsByTarget(fqn);
+        daoCollection.tagUsageDAO().deleteTagsByTarget(dao, fqn);
 
         if (operation.isPut()) {
           // PUT operation merges tags in the request with what already exists

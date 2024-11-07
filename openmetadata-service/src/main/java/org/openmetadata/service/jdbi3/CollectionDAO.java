@@ -142,6 +142,7 @@ import org.openmetadata.service.util.jdbi.BindFQN;
 import org.openmetadata.service.util.jdbi.BindUUID;
 
 public interface CollectionDAO {
+  org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(CollectionDAO.class);
   @CreateSqlObject
   DatabaseDAO databaseDAO();
 
@@ -776,11 +777,10 @@ public interface CollectionDAO {
     }
 
     default void insertGraph(UUID fromId, UUID toId, String fromEntity, String toEntity, Relationship relationship, String json) {
-      try {
-        GraphTraversalSource g = new JanusGraphClient().getWriteGraphTraversalSource();
+      try (GraphTraversalSource g = new JanusGraphClient().getWriteGraphTraversalSource()) {
         val fromOpt = g.V().has("uid", fromId.toString()).tryNext();
         val toOpt = g.V().has("uid", toId.toString()).tryNext();
-        if(fromOpt.isEmpty() || toOpt.isEmpty()) {
+        if (fromOpt.isEmpty() || toOpt.isEmpty()) {
           return;
         }
         val e = g.V().has("uid", fromId.toString())
@@ -797,7 +797,7 @@ public interface CollectionDAO {
             .property("toEntity", toEntity)
             .iterate();
       } catch (Exception e) {
-        e.printStackTrace();
+        LOG.error(e.getMessage(), e);
       }
     }
 
@@ -2470,6 +2470,36 @@ public interface CollectionDAO {
         @Bind("labelType") int labelType,
         @Bind("state") int state);
 
+    default void applyTagGraph(
+        TagLabel.TagSource source,
+        String nameHashColumn, String tagFQN,
+        String targetNameHashColumn, String targetFQN,
+        TagLabel.LabelType labelType, TagLabel.State state) {
+      try (GraphTraversalSource g = new JanusGraphClient().getWriteGraphTraversalSource()) {
+        val fromOpt = g.V().has(nameHashColumn, FullyQualifiedName.buildHash(tagFQN)).tryNext();
+        val toOpt = g.V().has(targetNameHashColumn, FullyQualifiedName.buildHash(targetFQN)).tryNext();
+        if (fromOpt.isPresent() && toOpt.isPresent()) {
+          val e = g.V(fromOpt.get())
+              .outE("tag_to")
+              .filter(inV().hasId(toOpt.get().id()))
+              .tryNext()
+              .orElseGet(() ->
+                  g.addE("tag_to")
+                      .from(fromOpt.get())
+                      .to(toOpt.get())
+                      .next());
+          g.E(e)
+              .property("source", source.name())
+              .property("labelType", labelType.name())
+              .property("state", state.name())
+              .iterate();
+        }
+      } catch (Exception e) {
+        LOG.error(e.getMessage(), e);
+      }
+
+    }
+
     default List<TagLabel> getTags(String targetFQN) {
       List<TagLabel> tags = getTagsInternal(targetFQN);
       tags.forEach(TagLabelUtil::applyTagCommonFields);
@@ -2552,7 +2582,16 @@ public interface CollectionDAO {
     int getTagCount(@Bind("source") int source, @BindFQN("tagFqnHash") String tagFqnHash);
 
     @SqlUpdate("DELETE FROM tag_usage where targetFQNHash = :targetFQNHash")
-    void deleteTagsByTarget(@BindFQN("targetFQNHash") String targetFQNHash);
+    void deleteTagsByTarget0(@BindFQN("targetFQNHash") String targetFQNHash);
+
+    default void deleteTagsByTarget(EntityDAO<?> dao, String targetFQN) {
+      deleteTagsByTarget0(targetFQN);
+      try (GraphTraversalSource g = new JanusGraphClient().getWriteGraphTraversalSource()) {
+        g.V().has(dao.getNameHashColumn(), FullyQualifiedName.buildHash(targetFQN)).inE("tag_to").drop().iterate();
+      } catch (Exception e) {
+        LOG.error(e.getMessage(), e);
+      }
+    }
 
     @SqlUpdate(
         "DELETE FROM tag_usage where tagFQNHash = :tagFqnHash AND targetFQNHash LIKE CONCAT(:targetFQNHash, '%')")

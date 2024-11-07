@@ -400,8 +400,6 @@ public interface EntityDAO<T extends EntityInterface> {
       properties.forEach((k, v) -> {
         if (k.equalsIgnoreCase("id")) {
           copy.put("uid", v);
-        } else if (k.equalsIgnoreCase(getNameHashColumn())) {
-          copy.put(getNameHashColumn(), FullyQualifiedName.buildHash(entity.getFullyQualifiedName()));
         } else if (v instanceof Map || v instanceof List || v instanceof Set) {
           copy.put(k, JsonUtils.pojoToJson(v));
         } else if (v instanceof Enum) {
@@ -410,6 +408,7 @@ public interface EntityDAO<T extends EntityInterface> {
           copy.put(k, v);
         }
       });
+      copy.put(getNameHashColumn(), FullyQualifiedName.buildHash(entity.getFullyQualifiedName()));
       g.V(vertex).property(copy).iterate();
     } catch (Exception e) {
       LOG.error(e.getMessage(), e);

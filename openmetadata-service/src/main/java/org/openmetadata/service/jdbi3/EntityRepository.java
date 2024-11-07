@@ -1447,6 +1447,14 @@ public abstract class EntityRepository<T extends EntityInterface> {
                 targetFQN,
                 tagLabel.getLabelType().ordinal(),
                 tagLabel.getState().ordinal());
+        daoCollection.tagUsageDAO().applyTagGraph(
+            tagLabel.getSource(),
+            Entity.getEntityRepository(Entity.TAG).getDao().getNameHashColumn(),
+            tagLabel.getTagFQN(),
+            dao.getNameHashColumn(),
+            targetFQN,
+            tagLabel.getLabelType(),
+            tagLabel.getState());
       }
     }
   }
@@ -2439,7 +2447,7 @@ public abstract class EntityRepository<T extends EntityInterface> {
 
       // Remove current entity tags in the database. It will be added back later from the merged tag
       // list.
-      daoCollection.tagUsageDAO().deleteTagsByTarget(fqn);
+      daoCollection.tagUsageDAO().deleteTagsByTarget(dao, fqn);
 
       if (operation.isPut()) {
         // PUT operation merges tags in the request with what already exists
@@ -2997,7 +3005,7 @@ public abstract class EntityRepository<T extends EntityInterface> {
       // Delete tags related to deleted columns
       deletedColumns.forEach(
           deleted ->
-              daoCollection.tagUsageDAO().deleteTagsByTarget(deleted.getFullyQualifiedName()));
+              daoCollection.tagUsageDAO().deleteTagsByTarget(dao, deleted.getFullyQualifiedName()));
 
       // Add tags related to newly added columns
       for (Column added : addedColumns) {
