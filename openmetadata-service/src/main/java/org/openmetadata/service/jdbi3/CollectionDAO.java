@@ -13,6 +13,7 @@
 
 package org.openmetadata.service.jdbi3;
 
+import static org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__.inV;
 import static org.openmetadata.common.utils.CommonUtil.nullOrEmpty;
 import static org.openmetadata.schema.type.Relationship.CONTAINS;
 import static org.openmetadata.schema.type.Relationship.MENTIONED_IN;
@@ -37,8 +38,11 @@ import java.util.stream.Collectors;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.Setter;
+import lombok.val;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.Triple;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import org.jdbi.v3.core.extension.ExtensionMethod;
 import org.jdbi.v3.core.mapper.RowMapper;
 import org.jdbi.v3.core.statement.StatementContext;
 import org.jdbi.v3.core.statement.StatementException;
@@ -123,6 +127,7 @@ import org.openmetadata.schema.util.EntitiesCount;
 import org.openmetadata.schema.util.ServicesCount;
 import org.openmetadata.schema.utils.EntityInterfaceUtil;
 import org.openmetadata.service.Entity;
+import org.openmetadata.service.graph.JanusGraphClient;
 import org.openmetadata.service.jdbi3.CollectionDAO.TagUsageDAO.TagLabelMapper;
 import org.openmetadata.service.jdbi3.CollectionDAO.UsageDAO.UsageDetailsMapper;
 import org.openmetadata.service.jdbi3.FeedRepository.FilterType;
@@ -137,6 +142,7 @@ import org.openmetadata.service.util.jdbi.BindFQN;
 import org.openmetadata.service.util.jdbi.BindUUID;
 
 public interface CollectionDAO {
+  org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(CollectionDAO.class);
   @CreateSqlObject
   DatabaseDAO databaseDAO();
 
@@ -757,13 +763,52 @@ public interface CollectionDAO {
                 + "(:fromId, :toId, :fromEntity, :toEntity, :relation, (:json :: jsonb)) "
                 + "ON CONFLICT (fromId, toId, relation) DO UPDATE SET json = EXCLUDED.json",
         connectionType = POSTGRES)
-    void insert(
+    void insert0(
         @BindUUID("fromId") UUID fromId,
         @BindUUID("toId") UUID toId,
         @Bind("fromEntity") String fromEntity,
         @Bind("toEntity") String toEntity,
         @Bind("relation") int relation,
         @Bind("json") String json);
+
+    default Relationship fromOrdinal(int ordinal) {
+      for (Relationship relationship : Relationship.values()) {
+        if (ordinal == relationship.ordinal()) {
+          return relationship;
+        }
+      }
+      throw new IllegalArgumentException("Invalid ordinal[" + ordinal + "] for Relationship");
+    }
+
+    default void insert(UUID fromId, UUID toId, String fromEntity, String toEntity, int relation, String json) {
+      insert0(fromId, toId, fromEntity, toEntity, relation, json);
+      insertGraph(fromId, toId, fromEntity, toEntity, fromOrdinal(relation), json);
+    }
+
+    default void insertGraph(UUID fromId, UUID toId, String fromEntity, String toEntity, Relationship relationship, String json) {
+      try (GraphTraversalSource g = new JanusGraphClient().getWriteGraphTraversalSource()) {
+        val fromOpt = g.V().has("uid", fromId.toString()).tryNext();
+        val toOpt = g.V().has("uid", toId.toString()).tryNext();
+        if (fromOpt.isEmpty() || toOpt.isEmpty()) {
+          return;
+        }
+        val e = g.V().has("uid", fromId.toString())
+            .outE(relationship.value())
+            .filter(inV().has("uid", toId.toString()))
+            .tryNext()
+            .orElseGet(() ->
+                g.addE(relationship.value())
+                    .from(fromOpt.get())
+                    .to(toOpt.get())
+                    .next());
+        g.E(e).property("json", json)
+            .property("fromEntity", fromEntity)
+            .property("toEntity", toEntity)
+            .iterate();
+      } catch (Exception e) {
+        LOG.error(e.getMessage(), e);
+      }
+    }
 
     @ConnectionAwareSqlUpdate(
         value =
@@ -881,12 +926,29 @@ public interface CollectionDAO {
         "DELETE from entity_relationship WHERE fromId = :fromId "
             + "AND fromEntity = :fromEntity AND toId = :toId AND toEntity = :toEntity "
             + "AND relation = :relation")
-    int delete(
+    int delete0(
         @BindUUID("fromId") UUID fromId,
         @Bind("fromEntity") String fromEntity,
         @BindUUID("toId") UUID toId,
         @Bind("toEntity") String toEntity,
         @Bind("relation") int relation);
+
+    default int delete(UUID fromId, String fromEntity, UUID toId, String toEntity, int relation) {
+      deleteGraph(fromId, fromEntity, toId, toEntity, fromOrdinal(relation));
+      return delete0(fromId, fromEntity, toId, toEntity, relation);
+    }
+
+    default void deleteGraph(UUID fromId, String fromEntity, UUID toId, String toEntity, Relationship relationship) {
+      try (GraphTraversalSource g = new JanusGraphClient().getWriteGraphTraversalSource()) {
+        g.V().has("uid", fromId.toString())
+            .outE(relationship.value())
+            .filter(inV().has("uid", toId.toString()))
+            .drop()
+            .iterate();
+      } catch (Exception e) {
+        e.printStackTrace();
+      }
+    }
 
     // Delete all the entity relationship fromID --- relation --> entity of type toEntity
     @SqlUpdate(
@@ -1370,7 +1432,7 @@ public interface CollectionDAO {
                 + "VALUES (:fromFQNHash, :toFQNHash, :fromFQN, :toFQN, :fromType, :toType, :relation, (:json :: jsonb)) "
                 + "ON CONFLICT (fromFQNHash, toFQNHash, relation) DO NOTHING",
         connectionType = POSTGRES)
-    void insert(
+    void insert0(
         @BindFQN("fromFQNHash") String fromFQNHash,
         @BindFQN("toFQNHash") String toFQNHash,
         @Bind("fromFQN") String fromFQN,
@@ -1379,6 +1441,10 @@ public interface CollectionDAO {
         @Bind("toType") String toType,
         @Bind("relation") int relation,
         @Bind("json") String json);
+
+    default void insert(String fromFQNHash, String toFQNHash, String fromFQN, String toFQN, String fromType, String toType, int relation, String json) {
+      insert0(fromFQNHash, toFQNHash, fromFQN, toFQN, fromType, toType, relation, json);
+    }
 
     @ConnectionAwareSqlUpdate(
         value =
@@ -2417,6 +2483,36 @@ public interface CollectionDAO {
         @Bind("labelType") int labelType,
         @Bind("state") int state);
 
+    default void applyTagGraph(
+        TagLabel.TagSource source,
+        String nameHashColumn, String tagFQN,
+        String targetNameHashColumn, String targetFQN,
+        TagLabel.LabelType labelType, TagLabel.State state) {
+      try (GraphTraversalSource g = new JanusGraphClient().getWriteGraphTraversalSource()) {
+        val fromOpt = g.V().has(nameHashColumn, FullyQualifiedName.buildHash(tagFQN)).tryNext();
+        val toOpt = g.V().has(targetNameHashColumn, FullyQualifiedName.buildHash(targetFQN)).tryNext();
+        if (fromOpt.isPresent() && toOpt.isPresent()) {
+          val e = g.V(fromOpt.get())
+              .outE(Relationship.TAG_TO.value())
+              .filter(inV().hasId(toOpt.get().id()))
+              .tryNext()
+              .orElseGet(() ->
+                  g.addE(Relationship.TAG_TO.value())
+                      .from(fromOpt.get())
+                      .to(toOpt.get())
+                      .next());
+          g.E(e)
+              .property("source", source.name())
+              .property("labelType", labelType.name())
+              .property("state", state.name())
+              .iterate();
+        }
+      } catch (Exception e) {
+        LOG.error(e.getMessage(), e);
+      }
+
+    }
+
     default List<TagLabel> getTags(String targetFQN) {
       List<TagLabel> tags = getTagsInternal(targetFQN);
       tags.forEach(TagLabelUtil::applyTagCommonFields);
@@ -2499,7 +2595,16 @@ public interface CollectionDAO {
     int getTagCount(@Bind("source") int source, @BindFQN("tagFqnHash") String tagFqnHash);
 
     @SqlUpdate("DELETE FROM tag_usage where targetFQNHash = :targetFQNHash")
-    void deleteTagsByTarget(@BindFQN("targetFQNHash") String targetFQNHash);
+    void deleteTagsByTarget0(@BindFQN("targetFQNHash") String targetFQNHash);
+
+    default void deleteTagsByTarget(EntityDAO<?> dao, String targetFQN) {
+      deleteTagsByTarget0(targetFQN);
+      try (GraphTraversalSource g = new JanusGraphClient().getWriteGraphTraversalSource()) {
+        g.V().has(dao.getNameHashColumn(), FullyQualifiedName.buildHash(targetFQN)).inE(Relationship.TAG_TO.value()).drop().iterate();
+      } catch (Exception e) {
+        LOG.error(e.getMessage(), e);
+      }
+    }
 
     @SqlUpdate(
         "DELETE FROM tag_usage where tagFQNHash = :tagFqnHash AND targetFQNHash LIKE CONCAT(:targetFQNHash, '%')")

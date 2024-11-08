@@ -516,7 +516,7 @@ public class PipelineRepository extends EntityRepository<Pipeline> {
         applyTaskTags(added);
         deleted.forEach(
             d -> {
-              daoCollection.tagUsageDAO().deleteTagsByTarget(d.getFullyQualifiedName());
+              daoCollection.tagUsageDAO().deleteTagsByTarget(dao, d.getFullyQualifiedName());
               deleteTaskOwnerRelationship(d);
             });
       }

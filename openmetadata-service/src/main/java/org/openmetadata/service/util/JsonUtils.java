@@ -550,4 +550,13 @@ public final class JsonUtils {
       case MISSING, NULL, POJO -> Object.class;
     };
   }
+
+  public static boolean isValidJson(String json) {
+    try {
+      OBJECT_MAPPER.readTree(json);
+      return true;
+    } catch (JsonProcessingException e) {
+      return false;
+    }
+  }
 }

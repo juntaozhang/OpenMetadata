@@ -13,6 +13,7 @@
 
 package org.openmetadata.service.jdbi3;
 
+import static org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__.*;
 import static org.openmetadata.common.utils.CommonUtil.listOrEmpty;
 import static org.openmetadata.common.utils.CommonUtil.nullOrEmpty;
 import static org.openmetadata.schema.type.EventType.ENTITY_CREATED;
@@ -100,8 +101,11 @@ import javax.ws.rs.core.UriInfo;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
+import lombok.val;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
 import org.jdbi.v3.sqlobject.transaction.Transaction;
 import org.openmetadata.common.utils.CommonUtil;
 import org.openmetadata.schema.CreateEntity;
@@ -143,6 +147,7 @@ import org.openmetadata.service.TypeRegistry;
 import org.openmetadata.service.exception.CatalogExceptionMessage;
 import org.openmetadata.service.exception.EntityNotFoundException;
 import org.openmetadata.service.exception.UnhandledServerException;
+import org.openmetadata.service.graph.JanusGraphClient;
 import org.openmetadata.service.jdbi3.CollectionDAO.EntityRelationshipRecord;
 import org.openmetadata.service.jdbi3.CollectionDAO.EntityVersionPair;
 import org.openmetadata.service.jdbi3.CollectionDAO.ExtensionRecord;
@@ -537,6 +542,11 @@ public abstract class EntityRepository<T extends EntityInterface> {
       }
       @SuppressWarnings("unchecked")
       T entity = (T) CACHE_WITH_ID.get(new ImmutablePair<>(entityType, id));
+//      try {
+//        update(entity);
+//      } catch (Exception e) {
+//        e.printStackTrace();
+//      }
       if (include == NON_DELETED && Boolean.TRUE.equals(entity.getDeleted())
           || include == DELETED && !Boolean.TRUE.equals(entity.getDeleted())) {
         throw new EntityNotFoundException(entityNotFound(entityType, id));
@@ -589,7 +599,7 @@ public abstract class EntityRepository<T extends EntityInterface> {
    * Find method is used for getting an entity only with core fields stored as JSON without any relational fields set
    */
   public final T findByName(String fqn, Include include) {
-    return findByName(fqn, include, true);
+    return findByName(fqn, include, false);
   }
 
   public final T findByName(String fqn, Include include, boolean fromCache) {
@@ -600,6 +610,11 @@ public abstract class EntityRepository<T extends EntityInterface> {
       }
       @SuppressWarnings("unchecked")
       T entity = (T) CACHE_WITH_NAME.get(new ImmutablePair<>(entityType, fqn));
+//      try {
+//        update(entity);
+//      } catch (Exception e) {
+//        e.printStackTrace();
+//      }
       if (include == NON_DELETED && Boolean.TRUE.equals(entity.getDeleted())
           || include == DELETED && !Boolean.TRUE.equals(entity.getDeleted())) {
         throw new EntityNotFoundException(entityNotFound(entityType, fqn));
@@ -1432,6 +1447,14 @@ public abstract class EntityRepository<T extends EntityInterface> {
                 targetFQN,
                 tagLabel.getLabelType().ordinal(),
                 tagLabel.getState().ordinal());
+        daoCollection.tagUsageDAO().applyTagGraph(
+            tagLabel.getSource(),
+            Entity.getEntityRepository(Entity.TAG).getDao().getNameHashColumn(),
+            tagLabel.getTagFQN(),
+            dao.getNameHashColumn(),
+            targetFQN,
+            tagLabel.getLabelType(),
+            tagLabel.getState());
       }
     }
   }
@@ -1597,11 +1620,31 @@ public abstract class EntityRepository<T extends EntityInterface> {
   public final List<EntityRelationshipRecord> findFromRecords(
       UUID toId, String toEntityType, Relationship relationship, String fromEntityType) {
     // When fromEntityType is null, all the relationships from any entity is returned
-    return fromEntityType == null
+    val records = fromEntityType == null
         ? daoCollection.relationshipDAO().findFrom(toId, toEntityType, relationship.ordinal())
         : daoCollection
-            .relationshipDAO()
-            .findFrom(toId, toEntityType, relationship.ordinal(), fromEntityType);
+        .relationshipDAO()
+        .findFrom(toId, toEntityType, relationship.ordinal(), fromEntityType);
+    List<EntityRelationshipRecord> recordsFromGraph = null;
+    try(GraphTraversalSource g = new JanusGraphClient().getReadGraphTraversalSource()) {
+      var e = g.V().has("uid", toId.toString()).inE(relationship.value());
+      if(fromEntityType != null) {
+        e = e.has("fromEntity", fromEntityType);
+      }
+      recordsFromGraph = e.project("fromEntity", "fromId")
+          .by(__.values("fromEntity"))
+          .by(__.outV().values("uid"))
+          .toList()
+          .stream().map(p ->
+              EntityRelationshipRecord.builder()
+                  .id(UUID.fromString(p.get("fromId").toString()))
+                  .type((String) p.get("fromEntity"))
+                  .build()
+          ).toList();
+    } catch (Exception e) {
+      e.printStackTrace();
+    }
+    return records;
   }
 
   public final EntityReference getContainer(UUID toId) {
@@ -2404,7 +2447,7 @@ public abstract class EntityRepository<T extends EntityInterface> {
 
       // Remove current entity tags in the database. It will be added back later from the merged tag
       // list.
-      daoCollection.tagUsageDAO().deleteTagsByTarget(fqn);
+      daoCollection.tagUsageDAO().deleteTagsByTarget(dao, fqn);
 
       if (operation.isPut()) {
         // PUT operation merges tags in the request with what already exists
@@ -2962,7 +3005,7 @@ public abstract class EntityRepository<T extends EntityInterface> {
       // Delete tags related to deleted columns
       deletedColumns.forEach(
           deleted ->
-              daoCollection.tagUsageDAO().deleteTagsByTarget(deleted.getFullyQualifiedName()));
+              daoCollection.tagUsageDAO().deleteTagsByTarget(dao, deleted.getFullyQualifiedName()));
 
       // Add tags related to newly added columns
       for (Column added : addedColumns) {
