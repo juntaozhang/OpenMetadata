@@ -771,9 +771,18 @@ public interface CollectionDAO {
         @Bind("relation") int relation,
         @Bind("json") String json);
 
+    default Relationship fromOrdinal(int ordinal) {
+      for (Relationship relationship : Relationship.values()) {
+        if (ordinal == relationship.ordinal()) {
+          return relationship;
+        }
+      }
+      throw new IllegalArgumentException("Invalid ordinal[" + ordinal + "] for Relationship");
+    }
+
     default void insert(UUID fromId, UUID toId, String fromEntity, String toEntity, int relation, String json) {
       insert0(fromId, toId, fromEntity, toEntity, relation, json);
-      insertGraph(fromId, toId, fromEntity, toEntity, Relationship.fromValue(relation), json);
+      insertGraph(fromId, toId, fromEntity, toEntity, fromOrdinal(relation), json);
     }
 
     default void insertGraph(UUID fromId, UUID toId, String fromEntity, String toEntity, Relationship relationship, String json) {
@@ -925,7 +934,7 @@ public interface CollectionDAO {
         @Bind("relation") int relation);
 
     default int delete(UUID fromId, String fromEntity, UUID toId, String toEntity, int relation) {
-      deleteGraph(fromId, fromEntity, toId, toEntity, Relationship.fromValue(relation));
+      deleteGraph(fromId, fromEntity, toId, toEntity, fromOrdinal(relation));
       return delete0(fromId, fromEntity, toId, toEntity, relation);
     }
 
@@ -1423,7 +1432,7 @@ public interface CollectionDAO {
                 + "VALUES (:fromFQNHash, :toFQNHash, :fromFQN, :toFQN, :fromType, :toType, :relation, (:json :: jsonb)) "
                 + "ON CONFLICT (fromFQNHash, toFQNHash, relation) DO NOTHING",
         connectionType = POSTGRES)
-    void insert(
+    void insert0(
         @BindFQN("fromFQNHash") String fromFQNHash,
         @BindFQN("toFQNHash") String toFQNHash,
         @Bind("fromFQN") String fromFQN,
@@ -1432,6 +1441,10 @@ public interface CollectionDAO {
         @Bind("toType") String toType,
         @Bind("relation") int relation,
         @Bind("json") String json);
+
+    default void insert(String fromFQNHash, String toFQNHash, String fromFQN, String toFQN, String fromType, String toType, int relation, String json) {
+      insert0(fromFQNHash, toFQNHash, fromFQN, toFQN, fromType, toType, relation, json);
+    }
 
     @ConnectionAwareSqlUpdate(
         value =
@@ -2480,11 +2493,11 @@ public interface CollectionDAO {
         val toOpt = g.V().has(targetNameHashColumn, FullyQualifiedName.buildHash(targetFQN)).tryNext();
         if (fromOpt.isPresent() && toOpt.isPresent()) {
           val e = g.V(fromOpt.get())
-              .outE("tag_to")
+              .outE(Relationship.TAG_TO.value())
               .filter(inV().hasId(toOpt.get().id()))
               .tryNext()
               .orElseGet(() ->
-                  g.addE("tag_to")
+                  g.addE(Relationship.TAG_TO.value())
                       .from(fromOpt.get())
                       .to(toOpt.get())
                       .next());
@@ -2587,7 +2600,7 @@ public interface CollectionDAO {
     default void deleteTagsByTarget(EntityDAO<?> dao, String targetFQN) {
       deleteTagsByTarget0(targetFQN);
       try (GraphTraversalSource g = new JanusGraphClient().getWriteGraphTraversalSource()) {
-        g.V().has(dao.getNameHashColumn(), FullyQualifiedName.buildHash(targetFQN)).inE("tag_to").drop().iterate();
+        g.V().has(dao.getNameHashColumn(), FullyQualifiedName.buildHash(targetFQN)).inE(Relationship.TAG_TO.value()).drop().iterate();
       } catch (Exception e) {
         LOG.error(e.getMessage(), e);
       }
